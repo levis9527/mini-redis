@@ -1,0 +1,11 @@
+Mini Redis 是一个 Windows x64 绿色目录程序，不是 Redis 官方产品。
+
+把 ZIP 解压到一个当前用户可写的文件夹后，运行里面的 MiniRedis.exe。不要只把 exe 拷走，目录里的运行时文件需要留在一起。不需要安装程序，也不需要单独安装 .NET 或 WebView2。
+
+配置写在程序目录的 data\connections.json。操作记录写在程序目录的 logs\audit.jsonl。不会改存到 AppData。如果这个目录不能写，程序会直接说明并退出。
+
+密码默认只留在本次运行的内存里。若勾选保存，使用 Windows DPAPI（当前用户）加密。换电脑或换 Windows 用户后不能解开，不要把“文件夹能拷走”理解成“密码也能拷走”。
+
+程序未签名。Windows 可能提示未知发布者，需要你自行确认文件来源。
+
+本目录对应的 Windows 版本以随包 README 和微软 .NET 10 支持矩阵为准。这里不保证在矩阵之外的系统上能打开窗口。

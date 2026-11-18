@@ -12,7 +12,7 @@
 
 依据微软支持策略页（页面标注 Last updated: November 10, 2026）：
 
-- .NET 10：2025-11-11 首发，LTS，支持阶段 Active，支持结束日 2026-11-14。
+- .NET 10：2025-11-11 首发，LTS，支持阶段 Active，支持结束日 2028-11-14。
 - .NET 11：2026-11-10 首发，STS，不是本程序的目标框架。
 - .NET 8 与 .NET 9 在该页「Out of support」表中，结束日 2026-11-10。
 
@@ -24,7 +24,7 @@ Windows 桌面范围以 Microsoft Learn「Install .NET on Windows」当前表格
 - Windows 10（21H2、1809、1607；该页说明 Windows 10 仅限 LTSC 与 Enterprise）x64
 - Windows Server 与 Server Core（2025、23H2、2022、2019、2016、2012 R2、2012）x64，以及列出的 Nano Server x64
 
-只发布 **win-x64**。不发布 x86 / Arm64，也不把 Windows 7 / 8.1 写成支持平台。该页写明 Windows Server 2012 / 2012 R2 仍可能需要 Visual C++ 2015–2019 可再发行组件，因此不把这些老系统说成「完全零依赖」。
+只发布 **win-x64**。桌面目标框架是 `net10.0-windows10.0.17763.0`（Windows 10 版本 1809 的 API 集）。上面的表还列出 Windows 10 1607 LTSC/Enterprise，本程序没有把目标平台降到 1607，所以不把 1607 写成最低版本。不发布 x86 / Arm64，也不把 Windows 7 / 8.1 写成支持平台。该页写明 Windows Server 2012 / 2012 R2 仍可能需要 Visual C++ 2015–2019 可再发行组件，因此不把这些老系统说成「完全零依赖」。
 
 发布形态：
 
@@ -35,7 +35,9 @@ Windows 桌面范围以 Microsoft Learn「Install .NET on Windows」当前表格
 - 不使用单文件自解压 exe，避免运行时把本机库解到 TEMP
 - ZIP 内应能直接看到 `MiniRedis.exe` 以及 `coreclr.dll`、`hostfxr.dll` 等运行时文件
 
-Redis 传输使用 NuGet 上的 **StackExchange.Redis 3.4.35**（稳定版，兼容 net10.0）。不自写 RESP。选择理由：二进制值有 `byte[]` 转换，TLS / ACL / 超时由该库维护；它的 `ExecuteAsync` 一次发送一条命令。高层次的 `Keys()` / `CursorEnumerable` 会在内部连续 SCAN，业务代码禁止使用。该库的 `ExecuteAsync` 没有 `CancellationToken` 参数，取消策略见下文，不为此另写协议栈。
+Redis 传输使用 NuGet 上的 **StackExchange.Redis 3.4.35**（稳定版，兼容 net10.0）。不自写 RESP。选择理由：二进制值有 `byte[]` 转换，TLS / ACL / 超时由该库维护；它的 `ExecuteAsync` 一次发送一条命令。高层次的 `Keys()` / `CursorEnumerable` 会在内部连续 SCAN，业务代码禁止使用。该库的 `ExecuteAsync` 没有 `CancellationToken` 参数，取消发生在两条命令之间，并在单条命令尚未返回时停止等待；下一条命令会等这一条在连接上结束，避免游标状态交错。不为此另写协议栈。
+
+这个库把 `KEYS` 当成管理命令。连接设置 `AllowAdmin=true`，否则用户确认后的 `KEYS` 也不会离开本机。这不是安全开关。`FLUSHDB`、`FLUSHALL`、`SHUTDOWN` 仍在调用 `Execute` 之前拒绝。
 
 界面是 WinForms 标准控件。没有内嵌网页，没有 WebView2，没有本地数据库。
 
@@ -216,10 +218,14 @@ GitHub Actions：`windows-latest`，`workflow_dispatch`、分支推送和 pull r
 
 ## 状态
 
+实现已落地。下面只写这次环境里实际发生的事。
+
 | 项 | 状态 |
 | --- | --- |
-| 本计划写入仓库 | 已写入，实现尚未开始 |
-| Core / Redis / WinForms | 未开始 |
-| 单元测试与集成测试 | 未开始 |
-| Windows 工作流与目录 ZIP | 未开始 |
-| 受支持 Windows 上的 GUI 实测 | 未做，不声称已通过 |
+| 本计划 | 已按实现结果修订目标框架和 AllowAdmin 说明 |
+| Core / Redis / WinForms | 已编译。桌面目标框架 `net10.0-windows10.0.17763.0` |
+| 自动化测试 | 在本环境 `dotnet test MiniRedis.sln -c Release`：29 通过，0 失败。其中包含临时 Redis 7.0.15 上的单次 SCAN、二进制 GET、字面 `*` 与 `KEYS`、命令元数据 |
+| 目录发布 | 本环境交叉发布 win-x64 自包含目录：280 个文件，目录 150010430 字节，ZIP 57102299 字节，含 `MiniRedis.exe`、`coreclr.dll`、`hostfxr.dll`。不是 Windows 上的启动时间或工作集 |
+| Windows 工作流 | 已提交，尚未在 GitHub 上看到运行结果 |
+| 受支持 Windows 上的 GUI | 未做。不声称窗口已经在 Windows 上打开过 |
+| 签名 / 公开 Release | 未做 |
