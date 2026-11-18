@@ -35,48 +35,66 @@ public class EditSafetyTests
     }
 
     [Fact]
-    public async Task Set_rename_adds_before_removing_and_stops_when_add_fails()
+    public void Unchanged_text_is_not_written_and_empty_string_still_is()
     {
-        var fake = new RecordingRedis { FailNext = true };
-        var change = ValueGuard.DescribeMemberChange("set", "kept", "", "next", "");
-        var reply = await ValueGuard.ApplyMemberChangeAsync((args, _) => fake.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("colors"), change, CancellationToken.None);
-        Assert.True(reply.IsError);
-        Assert.Equal(["SADD"], fake.Commands.Select(command => command[0]).ToArray());
+        Assert.False(ValueGuard.ShouldWriteString("same", "same"));
+        Assert.False(ValueGuard.ShouldWriteString("", ""));
+        Assert.True(ValueGuard.ShouldWriteString("same", ""));
+        Assert.True(ValueGuard.ShouldWriteString("", "x"));
     }
 
     [Fact]
-    public async Task Set_rename_removes_original_only_after_add()
+    public async Task Set_rename_does_not_fall_back_to_sadd_srem_when_script_is_denied()
+    {
+        var fake = new RecordingRedis();
+        fake.Handler = _ => RedisReply.ErrorOf("NOPERM this user has no permissions to run the 'eval' command");
+        var change = ValueGuard.DescribeMemberChange("set", "kept", "", "next", "");
+        var reply = await ValueGuard.ApplyMemberChangeAsync((args, _) => fake.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("colors"), change, CancellationToken.None);
+        Assert.True(reply.IsError);
+        Assert.Contains("没有改", reply.ErrorText);
+        Assert.Equal(["EVAL"], fake.Commands.Select(command => command[0]).ToArray());
+        Assert.DoesNotContain(fake.Commands, command => command[0] is "SADD" or "SREM");
+    }
+
+    [Fact]
+    public async Task Set_rename_sends_one_script_and_not_two_commands()
     {
         var fake = new RecordingRedis();
         var change = ValueGuard.DescribeMemberChange("set", "kept", "", "next", "");
         var reply = await ValueGuard.ApplyMemberChangeAsync((args, _) => fake.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("colors"), change, CancellationToken.None);
         Assert.False(reply.IsError);
-        Assert.Equal(["SADD", "SREM"], fake.Commands.Select(command => command[0]).ToArray());
-        Assert.Equal("next", fake.Commands[0][2]);
-        Assert.Equal("kept", fake.Commands[1][2]);
+        Assert.Single(fake.Commands);
+        Assert.Equal("EVAL", fake.Commands[0][0]);
+        Assert.Equal("kept", fake.Commands[0][4]);
+        Assert.Equal("next", fake.Commands[0][5]);
     }
 
     [Fact]
-    public async Task String_save_uses_keepttl_and_falls_back_without_clearing_expiry()
+    public async Task String_save_is_one_conditional_command_and_does_not_rewrite_on_failure()
     {
-        var kept = new RecordingRedis();
-        kept.Handler = args => args[0].Utf8 == "PTTL" ? RedisReply.IntegerOf(30000) : RedisReply.Simple("OK");
-        await ValueGuard.SaveStringPreservingTtlAsync((args, _) => kept.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("k"), "edited", CancellationToken.None);
-        Assert.Contains(kept.Commands, command => command[0] == "SET" && command.Any(part => part == "KEEPTTL"));
-        Assert.DoesNotContain(kept.Commands, command => command[0] == "PEXPIRE");
+        var ok = new RecordingRedis();
+        var saved = await ValueGuard.SaveStringPreservingTtlAsync((args, _) => ok.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("k"), "", CancellationToken.None);
+        Assert.False(saved.IsError);
+        Assert.Single(ok.Commands);
+        Assert.Equal(["SET", "k", "", "XX", "KEEPTTL"], ok.Commands[0]);
 
-        var fallback = new RecordingRedis();
-        fallback.Handler = args =>
+        foreach (var error in new[] { "ERR syntax error", "NOPERM no permissions to run the 'set' command", "ERR unknown command" })
         {
-            if (args[0].Utf8 == "PTTL")
-                return RedisReply.IntegerOf(30000);
-            if (args.Any(part => part.Utf8 == "KEEPTTL"))
-                return RedisReply.ErrorOf("ERR syntax error");
-            return RedisReply.Simple("OK");
-        };
-        await ValueGuard.SaveStringPreservingTtlAsync((args, _) => fallback.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("k"), "edited", CancellationToken.None);
-        Assert.Contains(fallback.Commands, command => command[0] == "SET" && command.All(part => part != "KEEPTTL"));
-        Assert.Contains(fallback.Commands, command => command[0] == "PEXPIRE" && command[2] == "30000");
+            var denied = new RecordingRedis { Handler = _ => RedisReply.ErrorOf(error) };
+            var reply = await ValueGuard.SaveStringPreservingTtlAsync((args, _) => denied.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("k"), "edited", CancellationToken.None);
+            Assert.True(reply.IsError);
+            Assert.Contains("没有写入", reply.ErrorText);
+            Assert.Single(denied.Commands);
+            Assert.Equal("XX", denied.Commands[0][3]);
+            Assert.Equal("KEEPTTL", denied.Commands[0][4]);
+            Assert.DoesNotContain(denied.Commands, command => command[0] == "PEXPIRE");
+        }
+
+        var gone = new RecordingRedis { Handler = _ => RedisReply.Null() };
+        var missing = await ValueGuard.SaveStringPreservingTtlAsync((args, _) => gone.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("k"), "edited", CancellationToken.None);
+        Assert.True(missing.IsError);
+        Assert.Contains("没有写入", missing.ErrorText);
+        Assert.Single(gone.Commands);
     }
 
     [Fact]
@@ -144,19 +162,97 @@ public class SafetyRedisTests
     }
 
     [Fact]
-    public async Task Saving_a_string_keeps_ttl_within_the_previous_window()
+    public async Task String_save_does_not_resurrect_or_make_a_key_permanent()
     {
-        var key = "ttl:" + Guid.NewGuid().ToString("n");
         await using var ui = await ConnectAsync();
         var session = ui.Open(0);
         async Task<RedisReply> Exec(IReadOnlyList<RedisArg> args, CancellationToken ct) => await session.ExecuteAsync(args, ct);
+        var info = await Exec([RedisArg.FromText("INFO"), RedisArg.FromText("server")], CancellationToken.None);
+        var major = MajorVersion(info.Text);
+        var key = "ttl:" + Guid.NewGuid().ToString("n");
         await Exec([RedisArg.FromText("SET"), RedisArg.FromText(key), RedisArg.FromText("old"), RedisArg.FromText("PX"), RedisArg.FromText("30000")], CancellationToken.None);
-        await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(key), "new", CancellationToken.None);
+
+        var save = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(key), "new", CancellationToken.None);
+        var value = await Exec([RedisArg.FromText("GET"), RedisArg.FromText(key)], CancellationToken.None);
         var pttl = await Exec(KeyArgs.Of("PTTL", RedisArg.FromText(key)), CancellationToken.None);
         var ttl = pttl.Integer ?? long.Parse(pttl.Text);
-        Assert.InRange(ttl, 1000, 30000);
-        var value = await Exec([RedisArg.FromText("GET"), RedisArg.FromText(key)], CancellationToken.None);
-        Assert.Equal("new", value.Text);
+        if (major < 6)
+        {
+            Assert.True(save.IsError);
+            Assert.Contains("没有写入", save.ErrorText);
+            Assert.Equal("old", value.Text);
+            Assert.InRange(ttl, 1000, 30000);
+        }
+        else
+        {
+            Assert.False(save.IsError);
+            Assert.Equal("new", value.Text);
+            Assert.InRange(ttl, 1000, 30000);
+            var empty = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(key), "", CancellationToken.None);
+            Assert.False(empty.IsError);
+            var emptyValue = await Exec([RedisArg.FromText("GET"), RedisArg.FromText(key)], CancellationToken.None);
+            Assert.Equal("", emptyValue.Text);
+            var ttlAfterEmpty = await Exec(KeyArgs.Of("PTTL", RedisArg.FromText(key)), CancellationToken.None);
+            Assert.InRange(ttlAfterEmpty.Integer ?? long.Parse(ttlAfterEmpty.Text), 1000, 30000);
+        }
+
+        await Exec([RedisArg.FromText("DEL"), RedisArg.FromText(key)], CancellationToken.None);
+        var deleted = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(key), "back", CancellationToken.None);
+        Assert.True(deleted.IsError);
+        var exists = await Exec([RedisArg.FromText("EXISTS"), RedisArg.FromText(key)], CancellationToken.None);
+        Assert.Equal("0", exists.Text);
+
+        var expiring = "exp:" + Guid.NewGuid().ToString("n");
+        await Exec([RedisArg.FromText("SET"), RedisArg.FromText(expiring), RedisArg.FromText("soon"), RedisArg.FromText("PX"), RedisArg.FromText("50")], CancellationToken.None);
+        await Task.Delay(200);
+        var expired = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(expiring), "later", CancellationToken.None);
+        Assert.True(expired.IsError);
+        var expiredExists = await Exec([RedisArg.FromText("EXISTS"), RedisArg.FromText(expiring)], CancellationToken.None);
+        Assert.Equal("0", expiredExists.Text);
+    }
+
+    [Fact]
+    public async Task Set_rename_script_failure_does_not_leave_both_members()
+    {
+        await using var ui = await ConnectAsync();
+        var session = ui.Open(0);
+        async Task<RedisReply> Exec(IReadOnlyList<RedisArg> args, CancellationToken ct) => await session.ExecuteAsync(args, ct);
+        var key = "set:" + Guid.NewGuid().ToString("n");
+        await Exec([RedisArg.FromText("SADD"), RedisArg.FromText(key), RedisArg.FromText("kept")], CancellationToken.None);
+        var change = ValueGuard.DescribeMemberChange("set", "kept", "", "next", "");
+        var renamed = await ValueGuard.ApplyMemberChangeAsync(Exec, RedisArg.FromText(key), change, CancellationToken.None);
+        Assert.False(renamed.IsError);
+        var members = await Exec([RedisArg.FromText("SMEMBERS"), RedisArg.FromText(key)], CancellationToken.None);
+        var names = (members.Items ?? []).Select(item => item.Text).ToArray();
+        Assert.Contains("next", names);
+        Assert.DoesNotContain("kept", names);
+
+        await Exec([RedisArg.FromText("DEL"), RedisArg.FromText(key)], CancellationToken.None);
+        var missing = await ValueGuard.ApplyMemberChangeAsync(Exec, RedisArg.FromText(key), change, CancellationToken.None);
+        Assert.True(missing.IsError);
+        var exists = await Exec([RedisArg.FromText("EXISTS"), RedisArg.FromText(key)], CancellationToken.None);
+        Assert.Equal("0", exists.Text);
+
+        var textKey = "str:" + Guid.NewGuid().ToString("n");
+        await Exec([RedisArg.FromText("SET"), RedisArg.FromText(textKey), RedisArg.FromText("not-a-set")], CancellationToken.None);
+        var wrong = await ValueGuard.ApplyMemberChangeAsync(Exec, RedisArg.FromText(textKey), change, CancellationToken.None);
+        Assert.True(wrong.IsError);
+        var still = await Exec([RedisArg.FromText("GET"), RedisArg.FromText(textKey)], CancellationToken.None);
+        Assert.Equal("not-a-set", still.Text);
+    }
+
+    private static int MajorVersion(string info)
+    {
+        foreach (var raw in info.Split('\n', '\r'))
+        {
+            var line = raw.Trim();
+            if (!line.StartsWith("redis_version:", StringComparison.Ordinal))
+                continue;
+            var version = line["redis_version:".Length..];
+            return int.Parse(version.Split('.')[0], System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        throw new InvalidOperationException("INFO 里没有 redis_version。");
     }
 
     [Fact]

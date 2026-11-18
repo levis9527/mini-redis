@@ -230,4 +230,4 @@ GitHub Actions：`windows-latest`，`workflow_dispatch`、分支推送和 pull r
 | 受支持 Windows 上的 GUI | 同一次冒烟退出码 0。startup_ms=1007，working_set_bytes=56692736，peak_working_set_bytes=56692736。只创建了主窗口并处理一轮消息，不是人工操作 |
 | 签名 / 公开 Release | 未做 |
 | 体积取舍 | 自包含目录带上整个桌面运行时，所以 ZIP 大约五十多 MB、解压后大约一百五十 MB。这是免安装的代价，不承诺再压小 |
-| 写入复核 | 已在隔离 Redis 上复现并修复。通过的 Windows 包是运行 44234469673：43 项测试通过，冒烟 startup_ms=1032，working_set_bytes=57008128，便携 ZIP 59020539 字节 |
+| 写入复核 | 字符串保存改为一条 SET XX KEEPTTL。不支持或拒绝时不写，不再用 SET 加 PEXPIRE。集合成员改名改为一条服务器脚本，拒绝时不改用 SADD/SREM。上一份已测包仍不要拿去改数据 |

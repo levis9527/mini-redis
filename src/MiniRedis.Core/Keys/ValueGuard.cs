@@ -62,41 +62,40 @@ public static class ValueGuard
         return seconds.ToString(CultureInfo.InvariantCulture);
     }
 
+    public const string StringTtlUnsafeMessage =
+        "服务器不能用一条 SET XX KEEPTTL 更新字符串并保留当前过期时间（需要 Redis 6 及以上，且 ACL 允许这条命令）。为避免把已过期或已删除的键重新创建，或把仍有过期时间的键写成永不过期，这次没有写入。";
+
+    public const string StringMissingMessage =
+        "键已经不存在或已过期。没有写入，也没有把它重新创建。";
+
+    public static bool ShouldWriteString(string original, string edited) => !SameText(original, edited);
+
+    public static RedisArg[] StringKeepTtlCommand(RedisArg key, string value) =>
+        [RedisArg.FromText("SET"), key, RedisArg.FromText(value), RedisArg.FromText("XX"), RedisArg.FromText("KEEPTTL")];
+
     public static async Task<RedisReply> SaveStringPreservingTtlAsync(
         Func<IReadOnlyList<RedisArg>, CancellationToken, Task<RedisReply>> execute,
         RedisArg key,
         string value,
         CancellationToken cancellationToken)
     {
-        var pttlReply = await execute(KeyArgs.Of("PTTL", key), cancellationToken).ConfigureAwait(false);
-        if (pttlReply.IsError)
-            return pttlReply;
-        var pttl = pttlReply.Integer ?? ParseLong(pttlReply.Text);
-        var keep = await execute(
-            [RedisArg.FromText("SET"), key, RedisArg.FromText(value), RedisArg.FromText("KEEPTTL")],
-            cancellationToken).ConfigureAwait(false);
-        if (!keep.IsError)
-            return keep;
-        if (!IsKeepTtlUnsupported(keep.ErrorText))
-            return keep;
-
-        var set = await execute(
-            [RedisArg.FromText("SET"), key, RedisArg.FromText(value)],
-            cancellationToken).ConfigureAwait(false);
-        if (set.IsError || pttl <= 0)
-            return set;
-        var restored = await execute(
-            KeyArgs.Of("PEXPIRE", key, pttl.ToString(CultureInfo.InvariantCulture)),
-            cancellationToken).ConfigureAwait(false);
-        return restored.IsError ? restored : set;
+        var reply = await execute(StringKeepTtlCommand(key, value), cancellationToken).ConfigureAwait(false);
+        if (reply.IsNull)
+            return RedisReply.ErrorOf(StringMissingMessage);
+        if (reply.IsError && IsAtomicStringUpdateUnavailable(reply.ErrorText))
+            return RedisReply.ErrorOf(StringTtlUnsafeMessage);
+        return reply;
     }
 
-    public static bool IsKeepTtlUnsupported(string? error)
+    public static bool IsAtomicStringUpdateUnavailable(string? error)
     {
         if (string.IsNullOrEmpty(error))
             return false;
         return error.Contains("syntax", StringComparison.OrdinalIgnoreCase)
-            || error.Contains("KEEPTTL", StringComparison.OrdinalIgnoreCase);
+            || error.Contains("KEEPTTL", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("unknown command", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("NOPERM", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("no permissions", StringComparison.OrdinalIgnoreCase);
     }
 
     public static MemberChange DescribeMemberChange(string type, string originalField, string originalValue, string fieldText, string valueText)
@@ -119,7 +118,7 @@ public static class ValueGuard
         if (kind == "set")
         {
             var changed = !SameText(originalField, fieldText);
-            return new MemberChange(changed, changed && fieldText.Length == 0, kind, originalField, "", fieldText, "", changed ? "将先加入新成员，成功后再删除原成员。" : "");
+            return new MemberChange(changed, changed && fieldText.Length == 0, kind, originalField, "", fieldText, "", changed ? "将用一条服务器脚本替换成员名。服务器若拒绝脚本，集合保持原样，不会改用先加后删。" : "");
         }
 
         return new MemberChange(false, false, kind, originalField, originalValue, fieldText, valueText, "此类型不在界面里修改成员。", true);
@@ -156,14 +155,18 @@ public static class ValueGuard
 
         if (change.Kind == "set")
         {
-            var added = await execute(
-                [RedisArg.FromText("SADD"), key, RedisArg.FromText(change.Field)],
-                cancellationToken).ConfigureAwait(false);
-            if (added.IsError)
-                return added;
-            return await execute(
-                [RedisArg.FromText("SREM"), key, RedisArg.FromText(change.OriginalField)],
-                cancellationToken).ConfigureAwait(false);
+            var reply = await execute(
+            [
+                RedisArg.FromText("EVAL"),
+                RedisArg.FromText(SetRenameScript),
+                RedisArg.FromText("1"),
+                key,
+                RedisArg.FromText(change.OriginalField),
+                RedisArg.FromText(change.Field)
+            ], cancellationToken).ConfigureAwait(false);
+            if (reply.IsError && IsScriptUnavailable(reply.ErrorText))
+                return RedisReply.ErrorOf("服务器不能执行替换集合成员名的脚本，集合没有改。不会改用 SADD 和 SREM，因为第二步失败时会同时留下新旧两个成员。");
+            return reply;
         }
 
         return RedisReply.ErrorOf("不支持的类型。");
@@ -172,8 +175,23 @@ public static class ValueGuard
     public static bool IsQueued(RedisReply reply) =>
         !reply.IsError && reply.Text.Equals("QUEUED", StringComparison.OrdinalIgnoreCase);
 
-    private static long ParseLong(string text) =>
-        long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0;
+    public static bool IsScriptUnavailable(string? error)
+    {
+        if (string.IsNullOrEmpty(error))
+            return false;
+        return error.Contains("unknown command", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("NOPERM", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("no permissions", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("NOSCRIPT", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private const string SetRenameScript =
+        "if redis.call('EXISTS', KEYS[1]) == 0 then return redis.error_reply('ERR key missing') end " +
+        "local t = redis.call('TYPE', KEYS[1]) " +
+        "local name = t if type(t) == 'table' then name = t['ok'] end " +
+        "if name ~= 'set' then return redis.error_reply('WRONGTYPE') end " +
+        "if ARGV[1] == ARGV[2] then return 0 end " +
+        "redis.call('SADD', KEYS[1], ARGV[2]) redis.call('SREM', KEYS[1], ARGV[1]) return 1";
 }
 
 public readonly record struct MemberChange(

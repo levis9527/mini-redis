@@ -1091,18 +1091,21 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (ValueGuard.SameText(_stringBuffer.EditText, _valueBox.Text))
+        if (!ValueGuard.ShouldWriteString(_stringBuffer.EditText, _valueBox.Text))
         {
             SetStatus("字符串没有改动，未写入。");
             return;
         }
 
         var note = _valueBox.Text.Length == 0 ? "新值是空字符串。" : "将覆盖当前字符串。";
-        if (!Dialogs.Confirm(this, "保存字符串", note + "\n过期时间会保留。服务器若不支持 KEEPTTL，会在写入后按原来剩余的毫秒重新设置。取消不会写入。", danger: false))
+        if (!Dialogs.Confirm(this, "保存字符串", note + "\n只使用一条 SET XX KEEPTTL。服务器不支持或拒绝时不会写入，也不会把已过期的键重新创建。取消不会写入。", danger: false))
             return;
         var reply = await ValueGuard.SaveStringPreservingTtlAsync(ExecListAsync, _selected.Value, _valueBox.Text, _lifetime.Token);
         if (reply.IsError)
+        {
             MessageBox.Show(this, reply.ErrorText);
+            await SelectKeyAsync();
+        }
         else
             await SelectKeyAsync();
     }
@@ -1198,7 +1201,10 @@ internal sealed class MainForm : Form
             return;
         var reply = await ValueGuard.ApplyMemberChangeAsync(ExecListAsync, _selected.Value, change, _lifetime.Token);
         if (reply.IsError)
+        {
             MessageBox.Show(this, reply.ErrorText);
+            await SelectKeyAsync();
+        }
         else
             await SelectKeyAsync();
     }
