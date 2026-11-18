@@ -18,9 +18,20 @@ Mini Redis 是一个 Windows x64 绿色桌面程序，用来连接 Redis 并查�
 
 本仓库用 SDK 10.0.404 编译。桌面项目的目标框架是 `net10.0-windows10.0.17763.0`，只发布 win-x64。17763 是 Windows 10 版本 1809。按 Microsoft Learn「Install .NET on Windows」里 .NET 10 的表格，运行时还列出 Windows 11（26H1、25H2、24H2、23H2 Ent/Edu）x64、Windows 10 21H2，以及 1809 / 1607 的 LTSC 与 Enterprise。本程序没有把目标平台降到 1607，因此不把 1607 写成这个程序的最低版本。不发布 x86 或 Arm64，也不支持 Windows 7 / 8.1。Windows Server 2012 / 2012 R2 按该页仍可能需要 Visual C++ 2015–2019 可再发行组件。服务器列表还包括该页上的 Windows Server x64。
 
-这里的编译和自动化测试是在 Linux 上做的，不能代替在上述 Windows 上打开窗口。没有在 Windows 上实测过界面，也不填写启动时间或工作集。
+## 体积
 
-在这台 Linux 上交叉发布的 win-x64 自包含目录有 280 个文件，目录合计 150010430 字节，打成 ZIP 后 57102299 字节。目录里有 `MiniRedis.exe`、`coreclr.dll` 和 `hostfxr.dll`。这不是单文件包，也不是 Windows 上的运行指标。
+自包含目录把 .NET 桌面运行时和本机库放进发布文件夹，这样解压后不必再安装运行时。体积因此不小，这是免安装换来的，不是把界面本身做成了一个很小的程序。
+
+Windows 运行 [44231976941](https://github.com/levis9527/mini-redis/actions/runs/44231976941) 打出的便携 ZIP 是 59013287 字节，里面 280 个文件。GitHub 再把这个 ZIP 和指标文件包成 Artifact `MiniRedis-win-x64-portable`，外层是 58623312 字节。同一套发布在 Linux 上交叉编译时，解压后的目录是 150010430 字节，ZIP 是 57102299 字节。两次压缩率不同，所以 ZIP 字节数不一样。这里不承诺以后能压到某个更小的数字。
+
+## 下载
+
+打开某次成功的 Actions 运行，在页面底部的 Artifacts 下载 `MiniRedis-win-x64-portable`。需要有这个仓库的读取权限。产物保留 14 天。这不是 GitHub Release，文件未签名，Windows 可能提示未知发布者。
+
+下载到的是 GitHub 的外层压缩包。解开后有 `MiniRedis-win-x64.zip`。再解压这一层，运行里面的 `MiniRedis.exe`，不要把 exe 单独拷走。
+
+已完成的一次：https://github.com/levis9527/mini-redis/actions/runs/44231976941  
+该次 Windows 测试是 29 通过、0 失败。界面冒烟步骤没有等到进程退出，没有写出启动时间或工作集，不能把那次当成窗口已打开。
 
 ## 怎么用
 

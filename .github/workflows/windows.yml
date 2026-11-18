@@ -58,18 +58,32 @@ jobs:
           New-Item -ItemType Directory -Force artifacts | Out-Null
           Compress-Archive -Path $dir -DestinationPath artifacts/MiniRedis-win-x64.zip -Force
           $zip = Get-Item artifacts/MiniRedis-win-x64.zip
+          $dirBytes = (Get-ChildItem $dir -File -Recurse | Measure-Object Length -Sum).Sum
           "files=$count" | Tee-Object -FilePath artifacts/package-metrics.txt
+          "dir_bytes=$dirBytes" | Tee-Object -FilePath artifacts/package-metrics.txt -Append
           "zip_bytes=$($zip.Length)" | Tee-Object -FilePath artifacts/package-metrics.txt -Append
 
       - name: UI smoke
         continue-on-error: true
         shell: pwsh
         run: |
-          & "artifacts/win-x64/MiniRedis/MiniRedis.exe" --smoke "artifacts/smoke-metrics.txt"
-          if (-not (Test-Path artifacts/smoke-metrics.txt)) {
-            "ok=false`nerror=smoke process produced no metrics file" | Set-Content artifacts/smoke-metrics.txt
+          $dir = (Resolve-Path "artifacts/win-x64/MiniRedis").Path
+          $out = Join-Path (Get-Location) "artifacts/smoke-metrics.txt"
+          $exe = Join-Path $dir "MiniRedis.exe"
+          # WinExe 没有控制台。直接调用会马上返回，进程还没写出指标就被步骤结束杀掉。
+          $p = Start-Process -FilePath $exe -ArgumentList @("--smoke", $out) -WorkingDirectory $dir -PassThru
+          if (-not $p.WaitForExit(90000)) {
+            try { $p.Kill() } catch {}
+            "ok=false`nerror=smoke timed out after 90s" | Set-Content $out
+            Get-Content $out
+            exit 1
           }
-          Get-Content artifacts/smoke-metrics.txt
+          "exit_code=$($p.ExitCode)" | Add-Content $out
+          if (-not (Test-Path $out)) {
+            "ok=false`nerror=smoke process produced no metrics file`nexit_code=$($p.ExitCode)" | Set-Content $out
+          }
+          Get-Content $out
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
 
       - name: Upload portable zip
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

@@ -14,6 +14,17 @@ internal static class Program
             var output = smoke + 1 < args.Length
                 ? args[smoke + 1]
                 : Path.Combine(AppContext.BaseDirectory, "smoke-metrics.txt");
+            try
+            {
+                var directory = Path.GetDirectoryName(Path.GetFullPath(output));
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+                File.WriteAllText(output, "stage=process-entered\n");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+
             return SmokeRunner.Run(output);
         }
 

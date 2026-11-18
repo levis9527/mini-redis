@@ -224,8 +224,9 @@ GitHub Actions：`windows-latest`，`workflow_dispatch`、分支推送和 pull r
 | --- | --- |
 | 本计划 | 已按实现结果修订目标框架和 AllowAdmin 说明 |
 | Core / Redis / WinForms | 已编译。桌面目标框架 `net10.0-windows10.0.17763.0` |
-| 自动化测试 | 在本环境 `dotnet test MiniRedis.sln -c Release`：29 通过，0 失败。其中包含临时 Redis 7.0.15 上的单次 SCAN、二进制 GET、字面 `*` 与 `KEYS`、命令元数据 |
-| 目录发布 | 本环境交叉发布 win-x64 自包含目录：280 个文件，目录 150010430 字节，ZIP 57102299 字节，含 `MiniRedis.exe`、`coreclr.dll`、`hostfxr.dll`。不是 Windows 上的启动时间或工作集 |
-| Windows 工作流 | 已提交，尚未在 GitHub 上看到运行结果 |
-| 受支持 Windows 上的 GUI | 未做。不声称窗口已经在 Windows 上打开过 |
+| 自动化测试 | Linux 上 `dotnet test -c Release`：29 通过，0 失败。Windows 运行 44231976941 同样是 29 通过、0 失败 |
+| 目录发布 | Linux 交叉发布：280 个文件，目录 150010430 字节，ZIP 57102299 字节。Windows 运行 44231976941：同样 280 个文件，便携 ZIP 59013287 字节。GitHub Artifact 外层 58623312 字节 |
+| Windows 工作流 | [44231976941](https://github.com/levis9527/mini-redis/actions/runs/44231976941) 成功。界面冒烟没有等到 WinExe 退出，没有启动时间或工作集 |
+| 受支持 Windows 上的 GUI | 上述冒烟不能当成窗口已经打开。不把资源数字写成已测量 |
 | 签名 / 公开 Release | 未做 |
+| 体积取舍 | 自包含目录带上整个桌面运行时，所以 ZIP 大约五十多 MB、解压后大约一百五十 MB。这是免安装的代价，不承诺再压小 |
