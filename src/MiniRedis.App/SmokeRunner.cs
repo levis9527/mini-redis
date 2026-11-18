@@ -33,7 +33,7 @@ internal static class SmokeRunner
         {
             try
             {
-                File.WriteAllText(outputPath, "ok=false\nerror=" + ex.GetType().Name + ": " + ex.Message + "\n");
+                File.WriteAllText(outputPath, "ok=false\nerror=" + ex.GetType().Name + ": " + ex.Message + "\n" + ex.StackTrace + "\n");
             }
             catch (IOException)
             {

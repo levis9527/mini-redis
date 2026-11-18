@@ -31,6 +31,7 @@ internal sealed class MainForm : Form
     private IRedisSession? _session;
     private StringBuffer _stringBuffer = new();
     private int _appliedDatabase = -1;
+    private bool _ready;
     private long _lastPttl = -1;
     private CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _scanCts;
@@ -100,6 +101,7 @@ internal sealed class MainForm : Form
         Size = new Size(1280, 800);
         StartPosition = FormStartPosition.CenterScreen;
         Build();
+        _ready = true;
         ReloadConnections();
         UpdateMode();
         SetStatus("尚未连接。连接成功后不会自动扫描。");
@@ -638,6 +640,12 @@ internal sealed class MainForm : Form
     private void ApplyDatabase(int database)
     {
         _terminalSession?.SetDatabase(database);
+        if (!_ready)
+        {
+            _appliedDatabase = database;
+            return;
+        }
+
         if (_appliedDatabase == database)
         {
             RefreshWhere();
@@ -668,14 +676,17 @@ internal sealed class MainForm : Form
         _query = null;
         _keys.Clear();
         _keyTypes.Clear();
-        _keyList.VirtualListSize = 0;
+        if (_keyList != null)
+            _keyList.VirtualListSize = 0;
         _selected = null;
         _page = null;
         _members.Clear();
-        _detailMeta.Text = "选中一个键后再读取值。";
-        _valueBox.Clear();
-        _grid.Rows.Clear();
-        SetStatus(status);
+        if (_detailMeta != null)
+            _detailMeta.Text = "选中一个键后再读取值。";
+        _valueBox?.Clear();
+        _grid?.Rows.Clear();
+        if (_status != null)
+            SetStatus(status);
         UpdateScanButtons();
     }
 
