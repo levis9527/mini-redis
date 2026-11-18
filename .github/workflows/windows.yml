@@ -9,6 +9,28 @@ permissions:
   contents: read
 
 jobs:
+  redis7:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install Redis 7
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          redis-server --version
+
+      - name: Test on Redis 7
+        run: dotnet test MiniRedis.sln -c Release --verbosity normal --filter "FullyQualifiedName!~Redis5_string_save_is_rejected"
+
   windows:
     runs-on: windows-latest
     permissions:
@@ -41,7 +63,8 @@ jobs:
         run: dotnet build MiniRedis.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test MiniRedis.sln -c Release --no-build --verbosity normal
+        run: dotnet test MiniRedis.sln -c Release --no-build --verbosity normal --filter "FullyQualifiedName!~Redis7_string_save_keeps_ttl"
+
 
       - name: Publish portable directory
         run: dotnet publish src/MiniRedis.App/MiniRedis.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:IncludeNativeLibrariesForSelfExtract=false -p:IncludeAllContentForSelfExtract=false -p:DebugType=None -p:DebugSymbols=false -o artifacts/win-x64/MiniRedis

@@ -1098,15 +1098,13 @@ internal sealed class MainForm : Form
         }
 
         var note = _valueBox.Text.Length == 0 ? "新值是空字符串。" : "将覆盖当前字符串。";
-        if (!Dialogs.Confirm(this, "保存字符串", note + "\n只使用一条 SET XX KEEPTTL。服务器不支持或拒绝时不会写入，也不会把已过期的键重新创建。取消不会写入。", danger: false))
+        if (!Dialogs.Confirm(this, "保存字符串", note + "\n只使用一条 SET XX KEEPTTL。它只在键还存在时写入，并保留当时的过期时间。它不检查类型，已有的其他类型会被换成字符串。也不防止别人同时改了值。服务器拒绝整条命令时不会改用别的写法。超时则结果不确定，界面会重新读取。取消不会发送。", danger: false))
             return;
         var reply = await ValueGuard.SaveStringPreservingTtlAsync(ExecListAsync, _selected.Value, _valueBox.Text, _lifetime.Token);
-        if (reply.IsError)
-        {
-            MessageBox.Show(this, reply.ErrorText);
-            await SelectKeyAsync();
-        }
-        else
+        var follow = ValueGuard.EditFollowUp.FromReply(reply);
+        if (follow.IsError)
+            MessageBox.Show(this, follow.Message);
+        if (follow.Reload)
             await SelectKeyAsync();
     }
 
@@ -1200,12 +1198,10 @@ internal sealed class MainForm : Form
         if (!Dialogs.Confirm(this, "保存成员", change.Message + (change.EmptyValue ? " 新内容是空的。" : "") + " 取消不会写入。", danger: false))
             return;
         var reply = await ValueGuard.ApplyMemberChangeAsync(ExecListAsync, _selected.Value, change, _lifetime.Token);
-        if (reply.IsError)
-        {
-            MessageBox.Show(this, reply.ErrorText);
-            await SelectKeyAsync();
-        }
-        else
+        var follow = ValueGuard.EditFollowUp.FromReply(reply);
+        if (follow.IsError)
+            MessageBox.Show(this, follow.Message);
+        if (follow.Reload)
             await SelectKeyAsync();
     }
 

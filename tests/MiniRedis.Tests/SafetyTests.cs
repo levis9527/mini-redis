@@ -51,9 +51,34 @@ public class EditSafetyTests
         var change = ValueGuard.DescribeMemberChange("set", "kept", "", "next", "");
         var reply = await ValueGuard.ApplyMemberChangeAsync((args, _) => fake.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("colors"), change, CancellationToken.None);
         Assert.True(reply.IsError);
-        Assert.Contains("没有改", reply.ErrorText);
+        Assert.Equal(ValueGuard.UncertainMessage, reply.ErrorText);
+        Assert.DoesNotContain("没有改", reply.ErrorText);
+        Assert.DoesNotContain("next", reply.ErrorText);
+        Assert.DoesNotContain("kept", reply.ErrorText);
+        var follow = ValueGuard.EditFollowUp.FromReply(reply);
+        Assert.True(follow.Reload);
+        Assert.Equal(ValueGuard.UncertainMessage, follow.Message);
         Assert.Equal(["EVAL"], fake.Commands.Select(command => command[0]).ToArray());
         Assert.DoesNotContain(fake.Commands, command => command[0] is "SADD" or "SREM");
+    }
+
+    [Fact]
+    public async Task Timeout_does_not_claim_the_write_was_skipped_or_echo_the_value()
+    {
+        var secret = "secret-value";
+        var timedOut = new RecordingRedis { Handler = _ => RedisReply.ErrorOf("Timeout performing SET " + secret) };
+        var reply = await ValueGuard.SaveStringPreservingTtlAsync((args, _) => timedOut.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("k"), secret, CancellationToken.None);
+        Assert.Equal(ValueGuard.UncertainMessage, reply.ErrorText);
+        Assert.DoesNotContain("没有写入", reply.ErrorText);
+        Assert.DoesNotContain(secret, reply.ErrorText);
+        Assert.True(ValueGuard.EditFollowUp.FromReply(reply).Reload);
+
+        var scriptTimeout = new RecordingRedis { Handler = _ => RedisReply.ErrorOf("NOPERM SREM secret-member") };
+        var change = ValueGuard.DescribeMemberChange("set", "kept", "", "secret-member", "");
+        var renamed = await ValueGuard.ApplyMemberChangeAsync((args, _) => scriptTimeout.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("colors"), change, CancellationToken.None);
+        Assert.Equal(ValueGuard.UncertainMessage, renamed.ErrorText);
+        Assert.DoesNotContain("secret-member", renamed.ErrorText);
+        Assert.True(ValueGuard.EditFollowUp.FromReply(renamed).Reload);
     }
 
     [Fact]
@@ -83,7 +108,8 @@ public class EditSafetyTests
             var denied = new RecordingRedis { Handler = _ => RedisReply.ErrorOf(error) };
             var reply = await ValueGuard.SaveStringPreservingTtlAsync((args, _) => denied.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("k"), "edited", CancellationToken.None);
             Assert.True(reply.IsError);
-            Assert.Contains("没有写入", reply.ErrorText);
+            Assert.Contains("没有改用其他写入", reply.ErrorText);
+            Assert.DoesNotContain("edited", reply.ErrorText);
             Assert.Single(denied.Commands);
             Assert.Equal("XX", denied.Commands[0][3]);
             Assert.Equal("KEEPTTL", denied.Commands[0][4]);
@@ -93,7 +119,7 @@ public class EditSafetyTests
         var gone = new RecordingRedis { Handler = _ => RedisReply.Null() };
         var missing = await ValueGuard.SaveStringPreservingTtlAsync((args, _) => gone.ExecuteAsync(args, CancellationToken.None), RedisArg.FromText("k"), "edited", CancellationToken.None);
         Assert.True(missing.IsError);
-        Assert.Contains("没有写入", missing.ErrorText);
+        Assert.Contains("不会把键重新创建", missing.ErrorText);
         Assert.Single(gone.Commands);
     }
 
@@ -162,53 +188,81 @@ public class SafetyRedisTests
     }
 
     [Fact]
-    public async Task String_save_does_not_resurrect_or_make_a_key_permanent()
+    public async Task Redis5_string_save_is_rejected_and_leaves_the_key_unchanged()
     {
+        var major = await ServerMajorAsync();
+        if (major >= 6)
+        {
+            Console.WriteLine("REDIS5_REJECTION_NOT_RUN major=" + major);
+            return;
+        }
         await using var ui = await ConnectAsync();
         var session = ui.Open(0);
         async Task<RedisReply> Exec(IReadOnlyList<RedisArg> args, CancellationToken ct) => await session.ExecuteAsync(args, ct);
-        var info = await Exec([RedisArg.FromText("INFO"), RedisArg.FromText("server")], CancellationToken.None);
-        var major = MajorVersion(info.Text);
         var key = "ttl:" + Guid.NewGuid().ToString("n");
         await Exec([RedisArg.FromText("SET"), RedisArg.FromText(key), RedisArg.FromText("old"), RedisArg.FromText("PX"), RedisArg.FromText("30000")], CancellationToken.None);
-
         var save = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(key), "new", CancellationToken.None);
+        Assert.Contains("没有改用其他写入", save.ErrorText ?? "");
         var value = await Exec([RedisArg.FromText("GET"), RedisArg.FromText(key)], CancellationToken.None);
-        var pttl = await Exec(KeyArgs.Of("PTTL", RedisArg.FromText(key)), CancellationToken.None);
-        var ttl = pttl.Integer ?? long.Parse(pttl.Text);
-        if (major < 6)
-        {
-            Assert.True(save.IsError);
-            Assert.Contains("没有写入", save.ErrorText);
-            Assert.Equal("old", value.Text);
-            Assert.InRange(ttl, 1000, 30000);
-        }
-        else
-        {
-            Assert.False(save.IsError);
-            Assert.Equal("new", value.Text);
-            Assert.InRange(ttl, 1000, 30000);
-            var empty = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(key), "", CancellationToken.None);
-            Assert.False(empty.IsError);
-            var emptyValue = await Exec([RedisArg.FromText("GET"), RedisArg.FromText(key)], CancellationToken.None);
-            Assert.Equal("", emptyValue.Text);
-            var ttlAfterEmpty = await Exec(KeyArgs.Of("PTTL", RedisArg.FromText(key)), CancellationToken.None);
-            Assert.InRange(ttlAfterEmpty.Integer ?? long.Parse(ttlAfterEmpty.Text), 1000, 30000);
-        }
+        Assert.Equal("old", value.Text);
+        var ttl = await PttlAsync(Exec, key);
+        Assert.InRange(ttl, 1000, 30000);
+        await AssertMissingStaysMissingAsync(Exec, key);
+    }
 
-        await Exec([RedisArg.FromText("DEL"), RedisArg.FromText(key)], CancellationToken.None);
-        var deleted = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(key), "back", CancellationToken.None);
+    [Fact]
+    public async Task Redis7_string_save_keeps_ttl_and_does_not_recreate_a_missing_key()
+    {
+        var major = await ServerMajorAsync();
+        if (major < 7)
+            Assert.Fail("REDIS7_SUCCESS_PATH_NOT_EXECUTED major=" + major + "。这次失败表示没有跑成 Redis 7 的保存证明，不能把它算进通过数。");
+        Console.WriteLine("REDIS7_TTL_PRESERVED major=" + major);
+        await using var ui = await ConnectAsync();
+        var session = ui.Open(0);
+        async Task<RedisReply> Exec(IReadOnlyList<RedisArg> args, CancellationToken ct) => await session.ExecuteAsync(args, ct);
+        var key = "ttl:" + Guid.NewGuid().ToString("n");
+        await Exec([RedisArg.FromText("SET"), RedisArg.FromText(key), RedisArg.FromText("old"), RedisArg.FromText("PX"), RedisArg.FromText("30000")], CancellationToken.None);
+        var save = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(key), "new", CancellationToken.None);
+        Assert.False(save.IsError);
+        var value = await Exec([RedisArg.FromText("GET"), RedisArg.FromText(key)], CancellationToken.None);
+        Assert.Equal("new", value.Text);
+        Assert.InRange(await PttlAsync(Exec, key), 1000, 30000);
+        var empty = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(key), "", CancellationToken.None);
+        Assert.False(empty.IsError);
+        var emptyValue = await Exec([RedisArg.FromText("GET"), RedisArg.FromText(key)], CancellationToken.None);
+        Assert.Equal("", emptyValue.Text);
+        Assert.InRange(await PttlAsync(Exec, key), 1000, 30000);
+        await AssertMissingStaysMissingAsync(Exec, key);
+    }
+
+    private static async Task AssertMissingStaysMissingAsync(Func<IReadOnlyList<RedisArg>, CancellationToken, Task<RedisReply>> exec, string key)
+    {
+        await exec([RedisArg.FromText("DEL"), RedisArg.FromText(key)], CancellationToken.None);
+        var deleted = await ValueGuard.SaveStringPreservingTtlAsync(exec, RedisArg.FromText(key), "back", CancellationToken.None);
         Assert.True(deleted.IsError);
-        var exists = await Exec([RedisArg.FromText("EXISTS"), RedisArg.FromText(key)], CancellationToken.None);
+        var exists = await exec([RedisArg.FromText("EXISTS"), RedisArg.FromText(key)], CancellationToken.None);
         Assert.Equal("0", exists.Text);
 
         var expiring = "exp:" + Guid.NewGuid().ToString("n");
-        await Exec([RedisArg.FromText("SET"), RedisArg.FromText(expiring), RedisArg.FromText("soon"), RedisArg.FromText("PX"), RedisArg.FromText("50")], CancellationToken.None);
+        await exec([RedisArg.FromText("SET"), RedisArg.FromText(expiring), RedisArg.FromText("soon"), RedisArg.FromText("PX"), RedisArg.FromText("50")], CancellationToken.None);
         await Task.Delay(200);
-        var expired = await ValueGuard.SaveStringPreservingTtlAsync(Exec, RedisArg.FromText(expiring), "later", CancellationToken.None);
+        var expired = await ValueGuard.SaveStringPreservingTtlAsync(exec, RedisArg.FromText(expiring), "later", CancellationToken.None);
         Assert.True(expired.IsError);
-        var expiredExists = await Exec([RedisArg.FromText("EXISTS"), RedisArg.FromText(expiring)], CancellationToken.None);
+        var expiredExists = await exec([RedisArg.FromText("EXISTS"), RedisArg.FromText(expiring)], CancellationToken.None);
         Assert.Equal("0", expiredExists.Text);
+    }
+
+    private static async Task<long> PttlAsync(Func<IReadOnlyList<RedisArg>, CancellationToken, Task<RedisReply>> exec, string key)
+    {
+        var pttl = await exec(KeyArgs.Of("PTTL", RedisArg.FromText(key)), CancellationToken.None);
+        return pttl.Integer ?? long.Parse(pttl.Text);
+    }
+
+    private async Task<int> ServerMajorAsync()
+    {
+        await using var ui = await ConnectAsync();
+        var info = await ui.Open(0).ExecuteAsync([RedisArg.FromText("INFO"), RedisArg.FromText("server")], CancellationToken.None);
+        return MajorVersion(info.Text);
     }
 
     [Fact]

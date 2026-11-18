@@ -63,10 +63,13 @@ public static class ValueGuard
     }
 
     public const string StringTtlUnsafeMessage =
-        "服务器不能用一条 SET XX KEEPTTL 更新字符串并保留当前过期时间（需要 Redis 6 及以上，且 ACL 允许这条命令）。为避免把已过期或已删除的键重新创建，或把仍有过期时间的键写成永不过期，这次没有写入。";
+        "服务器拒绝了 SET XX KEEPTTL，这次没有改用其他写入。这条命令只在服务器完整拒绝时才能确定没写上；它只保证键还在并保留当时的过期时间，不保证值或类型仍是你看到的那样。";
 
     public const string StringMissingMessage =
-        "键已经不存在或已过期。没有写入，也没有把它重新创建。";
+        "SET XX KEEPTTL 没有改到键。空回复表示当时键已经不存在，这条命令不会把键重新创建。";
+
+    public const string UncertainMessage =
+        "结果不确定，可能已经部分执行。界面会重新读取，请核对当前数据。";
 
     public static bool ShouldWriteString(string original, string edited) => !SameText(original, edited);
 
@@ -79,11 +82,24 @@ public static class ValueGuard
         string value,
         CancellationToken cancellationToken)
     {
-        var reply = await execute(StringKeepTtlCommand(key, value), cancellationToken).ConfigureAwait(false);
+        RedisReply reply;
+        try
+        {
+            reply = await execute(StringKeepTtlCommand(key, value), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return RedisReply.ErrorOf(UncertainMessage);
+        }
+
         if (reply.IsNull)
             return RedisReply.ErrorOf(StringMissingMessage);
+        if (reply.IsError && IsUncertainTransport(reply.ErrorText))
+            return RedisReply.ErrorOf(UncertainMessage);
         if (reply.IsError && IsAtomicStringUpdateUnavailable(reply.ErrorText))
             return RedisReply.ErrorOf(StringTtlUnsafeMessage);
+        if (reply.IsError)
+            return RedisReply.ErrorOf(UncertainMessage);
         return reply;
     }
 
@@ -118,7 +134,7 @@ public static class ValueGuard
         if (kind == "set")
         {
             var changed = !SameText(originalField, fieldText);
-            return new MemberChange(changed, changed && fieldText.Length == 0, kind, originalField, "", fieldText, "", changed ? "将用一条服务器脚本替换成员名。服务器若拒绝脚本，集合保持原样，不会改用先加后删。" : "");
+            return new MemberChange(changed, changed && fieldText.Length == 0, kind, originalField, "", fieldText, "", changed ? "将发送一条服务器脚本替换成员名。脚本若在中途失败，服务器不会自动撤销已做的修改，结果可能不确定，界面会重新读取。" : "");
         }
 
         return new MemberChange(false, false, kind, originalField, originalValue, fieldText, valueText, "此类型不在界面里修改成员。", true);
@@ -155,17 +171,26 @@ public static class ValueGuard
 
         if (change.Kind == "set")
         {
-            var reply = await execute(
-            [
-                RedisArg.FromText("EVAL"),
-                RedisArg.FromText(SetRenameScript),
-                RedisArg.FromText("1"),
-                key,
-                RedisArg.FromText(change.OriginalField),
-                RedisArg.FromText(change.Field)
-            ], cancellationToken).ConfigureAwait(false);
-            if (reply.IsError && IsScriptUnavailable(reply.ErrorText))
-                return RedisReply.ErrorOf("服务器不能执行替换集合成员名的脚本，集合没有改。不会改用 SADD 和 SREM，因为第二步失败时会同时留下新旧两个成员。");
+            RedisReply reply;
+            try
+            {
+                reply = await execute(
+                [
+                    RedisArg.FromText("EVAL"),
+                    RedisArg.FromText(SetRenameScript),
+                    RedisArg.FromText("1"),
+                    key,
+                    RedisArg.FromText(change.OriginalField),
+                    RedisArg.FromText(change.Field)
+                ], cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                return RedisReply.ErrorOf(UncertainMessage);
+            }
+
+            if (reply.IsError)
+                return RedisReply.ErrorOf(UncertainMessage);
             return reply;
         }
 
@@ -175,14 +200,18 @@ public static class ValueGuard
     public static bool IsQueued(RedisReply reply) =>
         !reply.IsError && reply.Text.Equals("QUEUED", StringComparison.OrdinalIgnoreCase);
 
-    public static bool IsScriptUnavailable(string? error)
+    public static bool IsUncertainTransport(string? error)
     {
         if (string.IsNullOrEmpty(error))
             return false;
-        return error.Contains("unknown command", StringComparison.OrdinalIgnoreCase)
-            || error.Contains("NOPERM", StringComparison.OrdinalIgnoreCase)
-            || error.Contains("no permissions", StringComparison.OrdinalIgnoreCase)
-            || error.Contains("NOSCRIPT", StringComparison.OrdinalIgnoreCase);
+        return error.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("timed out", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public readonly record struct EditFollowUp(string Message, bool IsError, bool Reload)
+    {
+        public static EditFollowUp FromReply(RedisReply reply) =>
+            new(reply.IsError ? reply.ErrorText ?? "" : "", reply.IsError, true);
     }
 
     private const string SetRenameScript =
