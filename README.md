@@ -32,7 +32,8 @@ Windows 运行 [44232295992](https://github.com/levis9527/mini-redis/actions/run
 
 运行 [44231976941](https://github.com/levis9527/mini-redis/actions/runs/44231976941)、[44232295992](https://github.com/levis9527/mini-redis/actions/runs/44232295992) 和 [44232541766](https://github.com/levis9527/mini-redis/actions/runs/44232541766) 是写入保护修好之前的包，不要拿去改数据。其中 44231976941 的冒烟没有写出指标；后两次冒烟曾经成功，但那只说明窗口能创建，不表示那些包可以安全保存。
 
-包含这些保护并通过 Windows CI 的包，才从对应运行的 Artifacts 下载。
+包含这些保护并通过 Windows CI 的包在这里：https://github.com/levis9527/mini-redis/actions/runs/44234469673  
+该次测试 43 通过、0 失败。便携 ZIP 59020539 字节，解压后 280 个文件、150027983 字节。Artifact 外层 58631702 字节。冒烟退出码 0，startup_ms=1032，working_set_bytes=57008128。这只是创建了主窗口，不是人工验收。冒烟失败会使这次工作流失败，产物不会上传。
 
 ## 怎么用
 
