@@ -1,0 +1,35 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniRedis.Core", "src\MiniRedis.Core\MiniRedis.Core.csproj", "{8B6E4C2A-1F0D-4C7E-9A11-6D5B0E4A71C2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniRedis.Redis", "src\MiniRedis.Redis\MiniRedis.Redis.csproj", "{C3A91E57-6B42-4F08-8D55-2E7A0B9C4F18}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniRedis.App", "src\MiniRedis.App\MiniRedis.App.csproj", "{D4E02B68-7C53-4019-9E66-3F8B1C0D5A29}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniRedis.Tests", "tests\MiniRedis.Tests\MiniRedis.Tests.csproj", "{E5F13C79-8D64-412A-AF77-409C2D1E6B3A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8B6E4C2A-1F0D-4C7E-9A11-6D5B0E4A71C2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8B6E4C2A-1F0D-4C7E-9A11-6D5B0E4A71C2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8B6E4C2A-1F0D-4C7E-9A11-6D5B0E4A71C2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8B6E4C2A-1F0D-4C7E-9A11-6D5B0E4A71C2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C3A91E57-6B42-4F08-8D55-2E7A0B9C4F18}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C3A91E57-6B42-4F08-8D55-2E7A0B9C4F18}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C3A91E57-6B42-4F08-8D55-2E7A0B9C4F18}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C3A91E57-6B42-4F08-8D55-2E7A0B9C4F18}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D4E02B68-7C53-4019-9E66-3F8B1C0D5A29}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D4E02B68-7C53-4019-9E66-3F8B1C0D5A29}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D4E02B68-7C53-4019-9E66-3F8B1C0D5A29}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D4E02B68-7C53-4019-9E66-3F8B1C0D5A29}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E5F13C79-8D64-412A-AF77-409C2D1E6B3A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E5F13C79-8D64-412A-AF77-409C2D1E6B3A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E5F13C79-8D64-412A-AF77-409C2D1E6B3A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E5F13C79-8D64-412A-AF77-409C2D1E6B3A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
