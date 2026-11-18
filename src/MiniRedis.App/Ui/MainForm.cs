@@ -298,7 +298,6 @@ internal sealed class MainForm : Form
         _deleteMember.Click += async (_, _) => await Guard(DeleteMemberAsync);
         _deleteKey.Click += async (_, _) => await Guard(DeleteKeyAsync);
         buttons.Controls.AddRange([refresh, _saveString, _moreString, _ttlBox, _applyTtl, _moreMembers, _saveMember, _addMember, _deleteMember, _deleteKey]);
-        _grid.SelectionChanged += (_, _) => ShowSelectedMember();
         var editors = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(8, 0, 8, 0) };
         _fieldBox = new TextBox { Width = 120 };
         _valueEdit = new TextBox { Width = 180 };
@@ -317,6 +316,7 @@ internal sealed class MainForm : Form
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             Visible = false
         };
+        _grid.SelectionChanged += (_, _) => ShowSelectedMember();
         panel.Controls.Add(_valueBox);
         panel.Controls.Add(_grid);
         panel.Controls.Add(editors);
