@@ -263,3 +263,38 @@ public sealed class RedisSession : IRedisSession
     public Task<CommandMetadata?> DescribeCommandAsync(string commandName, CancellationToken cancellationToken) =>
         _client.DescribeAsync(Database, commandName, cancellationToken);
 }
+
+public sealed class TrackedSession : IRedisSession
+{
+    private readonly StackExchangeRedisClient _client;
+    private int _database;
+
+    public TrackedSession(StackExchangeRedisClient client, int database)
+    {
+        _client = client;
+        _database = database;
+    }
+
+    public int Database => _database;
+
+    public void SetDatabase(int database) => _database = database;
+
+    public async Task<RedisReply> ExecuteAsync(IReadOnlyList<RedisArg> arguments, CancellationToken cancellationToken)
+    {
+        var reply = await _client.ExecuteAsync(_database, arguments, cancellationToken).ConfigureAwait(false);
+        if (!reply.IsError
+            && arguments.Count >= 2
+            && arguments[0].IsUtf8
+            && arguments[0].Utf8.Equals("SELECT", StringComparison.OrdinalIgnoreCase)
+            && int.TryParse(arguments[1].Utf8, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var selected)
+            && selected >= 0)
+        {
+            _database = selected;
+        }
+
+        return reply;
+    }
+
+    public Task<CommandMetadata?> DescribeCommandAsync(string commandName, CancellationToken cancellationToken) =>
+        _client.DescribeAsync(_database, commandName, cancellationToken);
+}

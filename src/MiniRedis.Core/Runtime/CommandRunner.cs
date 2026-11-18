@@ -1,4 +1,5 @@
 using MiniRedis.Core.Commands;
+using MiniRedis.Core.Keys;
 using MiniRedis.Core.Protocol;
 using MiniRedis.Core.Scanning;
 using MiniRedis.Core.Storage;
@@ -181,27 +182,30 @@ public sealed class CommandRunner
             reply = RedisReply.ErrorOf(ex.Message);
         }
 
+        var queued = ValueGuard.IsQueued(reply);
         var error = reply.IsError
             ? CommandSanitizer.SanitizeServerError(reply.ErrorText, parsed, visibility)
-            : "";
+            : queued ? "已入队，尚未执行" : "";
         var formatted = reply.IsError
             ? error
             : ReplyFormatter.Format(reply, AppLimits.ReplyMaxChars, out _);
+        if (queued)
+            formatted += "\n这条回复是 QUEUED，写入还没有执行。";
         var clock = ShanghaiClock.Format(DateTimeOffset.UtcNow);
         var write = audit.Append(new AuditEntry
         {
             Time = clock.Local,
             TimeUtc = clock.Utc,
             Connection = context.Connection,
-            Db = context.Database,
+            Db = redis.Database,
             Command = echo,
-            Ok = !reply.IsError,
+            Ok = !reply.IsError && !queued,
             Error = error
         });
         return new Sent(new TerminalResult
         {
             Sent = true,
-            Ok = !reply.IsError,
+            Ok = !reply.IsError && !queued,
             Echo = echo,
             Output = formatted,
             Visibility = visibility,

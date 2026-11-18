@@ -26,7 +26,12 @@ internal sealed class MainForm : Form
     private readonly ToolTip _tips = new() { AutoPopDelay = 7000, InitialDelay = 400, ReshowDelay = 200 };
 
     private StackExchangeRedisClient? _client;
+    private StackExchangeRedisClient? _terminalClient;
+    private TrackedSession? _terminalSession;
     private IRedisSession? _session;
+    private StringBuffer _stringBuffer = new();
+    private int _appliedDatabase = -1;
+    private long _lastPttl = -1;
     private CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _scanCts;
     private ScanQuery? _query;
@@ -35,7 +40,7 @@ internal sealed class MainForm : Form
     private bool _exactMode;
     private bool _busy;
     private RedisArg? _selected;
-    private StringView? _stringView;
+    private string _keyHeadline = "";
     private CollectionPage? _page;
     private readonly List<MemberRow> _members = [];
 
@@ -65,6 +70,7 @@ internal sealed class MainForm : Form
     private TextBox _valueEdit = null!;
     private TextBox _ttlBox = null!;
     private Button _saveString = null!;
+    private Button _moreString = null!;
     private Button _saveMember = null!;
     private Button _addMember = null!;
     private Button _deleteMember = null!;
@@ -202,7 +208,7 @@ internal sealed class MainForm : Form
         modes.Controls.Add(scanMode);
         modes.Controls.Add(exactMode);
         _database = new NumericUpDown { Minimum = 0, Maximum = 1023, Width = 64 };
-        _database.ValueChanged += async (_, _) => await Guard(DatabaseChangedAsync);
+        _database.ValueChanged += (_, _) => ApplyDatabase((int)_database.Value);
         modes.Controls.Add(new Label { Text = "DB", AutoSize = true, Padding = new Padding(8, 6, 0, 0) });
         modes.Controls.Add(_database);
 
@@ -272,6 +278,7 @@ internal sealed class MainForm : Form
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 36, Padding = new Padding(8, 0, 8, 0) };
         var refresh = Theme.Button("刷新");
         _saveString = Theme.Button("保存字符串");
+        _moreString = Theme.Button("继续读取");
         _applyTtl = Theme.Button("设置 TTL");
         _ttlBox = new TextBox { Width = 70, Text = "-1" };
         _moreMembers = Theme.Button("加载更多成员");
@@ -281,13 +288,15 @@ internal sealed class MainForm : Form
         _deleteKey = Theme.Button("删除键");
         refresh.Click += async (_, _) => await Guard(SelectKeyAsync);
         _saveString.Click += async (_, _) => await Guard(SaveStringAsync);
+        _moreString.Click += async (_, _) => await Guard(ContinueStringAsync);
         _applyTtl.Click += async (_, _) => await Guard(ApplyTtlAsync);
         _moreMembers.Click += async (_, _) => await Guard(() => LoadMembersAsync(append: true));
         _saveMember.Click += async (_, _) => await Guard(SaveMemberAsync);
         _addMember.Click += async (_, _) => await Guard(AddMemberAsync);
         _deleteMember.Click += async (_, _) => await Guard(DeleteMemberAsync);
         _deleteKey.Click += async (_, _) => await Guard(DeleteKeyAsync);
-        buttons.Controls.AddRange([refresh, _saveString, _ttlBox, _applyTtl, _moreMembers, _saveMember, _addMember, _deleteMember, _deleteKey]);
+        buttons.Controls.AddRange([refresh, _saveString, _moreString, _ttlBox, _applyTtl, _moreMembers, _saveMember, _addMember, _deleteMember, _deleteKey]);
+        _grid.SelectionChanged += (_, _) => ShowSelectedMember();
         var editors = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(8, 0, 8, 0) };
         _fieldBox = new TextBox { Width = 120 };
         _valueEdit = new TextBox { Width = 180 };
@@ -311,7 +320,10 @@ internal sealed class MainForm : Form
         panel.Controls.Add(editors);
         panel.Controls.Add(buttons);
         panel.Controls.Add(_detailMeta);
-        Tip(_saveString, "只在完整 UTF-8 字符串上保存。截断或二进制不能保存。");
+        Tip(_saveString, "只在已完整读入的 UTF-8 字符串上保存，并尽量保留原来的 TTL。没改内容不会写入。");
+        Tip(_moreString, "继续 GETRANGE 下一段。没读完的字节不能保存。");
+        Tip(_applyTtl, "只在秒数和当前显示不同时修改过期时间。");
+        Tip(_saveMember, "只写入和当前成员不同的内容。集合改名先加入新成员，成功后再删旧成员。");
         Tip(_moreMembers, "Hash/Set/ZSet 再发一次游标命令；List 再取下一页 LRANGE。");
         Tip(_deleteKey, "单键 DEL，不是清库。");
         return panel;
@@ -548,7 +560,20 @@ internal sealed class MainForm : Form
         if (password == null && profile.SavePassword)
             return;
         _client = await StackExchangeRedisClient.ConnectAsync(profile, password, _lifetime.Token);
+        try
+        {
+            _terminalClient = await StackExchangeRedisClient.ConnectAsync(profile, password, _lifetime.Token);
+        }
+        catch
+        {
+            _ = _client.DisposeAsync().AsTask();
+            _client = null;
+            throw;
+        }
+
         _session = _client.Open((int)_database.Value);
+        _terminalSession = new TrackedSession(_terminalClient, (int)_database.Value);
+        _appliedDatabase = (int)_database.Value;
         var ping = await _runner.ExecuteAppAsync(_session, _audit, Context(profile), [RedisArg.FromText("PING")], _readOnly, _lifetime.Token);
         if (ping.IsError)
         {
@@ -597,21 +622,35 @@ internal sealed class MainForm : Form
     {
         _scanCts?.Cancel();
         _session = null;
+        _terminalSession = null;
         var closing = _client;
+        var closingTerminal = _terminalClient;
         _client = null;
+        _terminalClient = null;
         if (closing != null)
             _ = closing.DisposeAsync().AsTask();
+        if (closingTerminal != null)
+            _ = closingTerminal.DisposeAsync().AsTask();
         ResetScan("已断开。");
         RefreshWhere();
     }
 
-    private async Task DatabaseChangedAsync()
+    private void ApplyDatabase(int database)
     {
-        if (_client == null)
+        _terminalSession?.SetDatabase(database);
+        if (_appliedDatabase == database)
+        {
+            RefreshWhere();
             return;
-        _session = _client.Open((int)_database.Value);
-        ResetScan("逻辑库已切换。尚未开始查询。");
-        await Task.CompletedTask;
+        }
+
+        _appliedDatabase = database;
+        if (_client != null)
+            _session = _client.Open(database);
+        if (_status != null)
+            ResetScan("逻辑库已切换。尚未开始查询。");
+        else
+            RefreshWhere();
     }
 
     private void SetQueryMode(bool exact)
@@ -631,7 +670,6 @@ internal sealed class MainForm : Form
         _keyTypes.Clear();
         _keyList.VirtualListSize = 0;
         _selected = null;
-        _stringView = null;
         _page = null;
         _members.Clear();
         _detailMeta.Text = "选中一个键后再读取值。";
@@ -894,8 +932,11 @@ internal sealed class MainForm : Form
         if (index < _keyTypes.Count)
             _keyTypes[index] = header.Type;
         _keyList.Invalidate();
-        _detailMeta.Text = DescribeHeader(_selected.Value, header);
-        _stringView = null;
+        _keyHeadline = DescribeHeader(_selected.Value, header);
+        _detailMeta.Text = _keyHeadline;
+        _lastPttl = header.PttlMilliseconds;
+        _ttlBox.Text = ValueGuard.TtlBoxText(header.PttlMilliseconds);
+        _stringBuffer = new StringBuffer();
         _page = null;
         _members.Clear();
         _grid.Rows.Clear();
@@ -908,15 +949,9 @@ internal sealed class MainForm : Form
 
         if (header.Type.Equals("string", StringComparison.OrdinalIgnoreCase))
         {
-            _stringView = await new KeyInspector(ExecListAsync).ReadStringAsync(_selected.Value, _lifetime.Token);
-            _valueBox.Visible = true;
-            _grid.Visible = false;
-            _valueBox.ReadOnly = _readOnly || !_stringView.CanEdit;
-            _valueBox.Text = _stringView.CanEdit ? _stringView.EditableText : _stringView.ReadOnlyText;
-            if (_stringView.Truncated)
-                _detailMeta.Text += "\n已截断显示前 " + _stringView.Preview.Length + " 字节，共 " + _stringView.TotalBytes + " 字节。保存已禁用，以免覆盖未显示内容。";
-            else if (!_stringView.IsUtf8)
-                _detailMeta.Text += "\n值不是 UTF-8，只读显示，不会按文本写回。";
+            var view = await new KeyInspector(ExecListAsync).ReadStringAsync(_selected.Value, _lifetime.Token);
+            _stringBuffer.Reset(view.Preview, view.TotalBytes);
+            ShowString();
             return;
         }
 
@@ -992,30 +1027,95 @@ internal sealed class MainForm : Form
         _detailMeta.Text = (_selected.Value.Display) + "  " + type + "  基数 " + page.Cardinality + "\n" + note;
     }
 
-    private async Task SaveStringAsync()
+    private void ShowString()
     {
-        if (_readOnly || _selected == null || _stringView == null)
+        _valueBox.Visible = true;
+        _grid.Visible = false;
+        _moreString.Enabled = _stringBuffer.CanContinue;
+        _valueBox.ReadOnly = _readOnly || !_stringBuffer.CanEdit;
+        if (_stringBuffer.CanEdit)
+            _valueBox.Text = _stringBuffer.EditText;
+        else if (_stringBuffer.IsUtf8)
+            _valueBox.Text = Encoding.UTF8.GetString(_stringBuffer.Data);
+        else
+            _valueBox.Text = RedisText.Display(_stringBuffer.Data, 4096);
+        var note = _keyHeadline;
+        if (!_stringBuffer.IsComplete)
+            note += "\n已读取 " + _stringBuffer.Data.Length + " / " + _stringBuffer.TotalBytes + " 字节。没读完的部分不会被保存覆盖。";
+        if (_stringBuffer.HitLoadCap)
+            note += "\n已达到界面读取上限，后面的字节没有读入，禁止保存。";
+        else if (!_stringBuffer.IsUtf8)
+            note += "\n当前内容不是可保存的 UTF-8 文本。二进制不会按文本写回。";
+        _detailMeta.Text = note;
+    }
+
+    private async Task ContinueStringAsync()
+    {
+        if (_selected == null || !_stringBuffer.CanContinue)
             return;
-        if (!_stringView.CanEdit)
+        var offset = _stringBuffer.Data.LongLength;
+        var end = offset + AppLimits.MaxStringBytes - 1;
+        var reply = await ExecAsync(
+            RedisArg.FromText("GETRANGE"),
+            _selected.Value,
+            RedisArg.FromText(offset.ToString(CultureInfo.InvariantCulture)),
+            RedisArg.FromText(end.ToString(CultureInfo.InvariantCulture)));
+        if (reply.IsError)
         {
-            MessageBox.Show(this, "当前值已截断或不是 UTF-8，禁止保存，以免覆盖未见过的字节。");
+            MessageBox.Show(this, reply.ErrorText);
             return;
         }
 
-        await ExecAsync(RedisArg.FromText("SET"), _selected.Value, RedisArg.FromText(_valueBox.Text));
-        await SelectKeyAsync();
+        _stringBuffer.Append(reply.Bytes ?? []);
+        ShowString();
+    }
+
+    private async Task SaveStringAsync()
+    {
+        if (_readOnly || _selected == null)
+            return;
+        if (!_stringBuffer.CanEdit)
+        {
+            MessageBox.Show(this, "值还没读完，或不是 UTF-8。禁止保存，以免覆盖没看见的字节。");
+            return;
+        }
+
+        if (ValueGuard.SameText(_stringBuffer.EditText, _valueBox.Text))
+        {
+            SetStatus("字符串没有改动，未写入。");
+            return;
+        }
+
+        var note = _valueBox.Text.Length == 0 ? "新值是空字符串。" : "将覆盖当前字符串。";
+        if (!Dialogs.Confirm(this, "保存字符串", note + "\n过期时间会保留。服务器若不支持 KEEPTTL，会在写入后按原来剩余的毫秒重新设置。取消不会写入。", danger: false))
+            return;
+        var reply = await ValueGuard.SaveStringPreservingTtlAsync(ExecListAsync, _selected.Value, _valueBox.Text, _lifetime.Token);
+        if (reply.IsError)
+            MessageBox.Show(this, reply.ErrorText);
+        else
+            await SelectKeyAsync();
     }
 
     private async Task ApplyTtlAsync()
     {
         if (_readOnly || _selected == null)
             return;
-        if (!long.TryParse(_ttlBox.Text, out var seconds) || seconds == 0 || seconds < -1)
+        var baseline = ValueGuard.TtlBoxText(_lastPttl);
+        if (ValueGuard.SameText(baseline, _ttlBox.Text.Trim()))
         {
-            MessageBox.Show(this, "TTL 请填写正数秒，或 -1 表示 PERSIST。0 会删除键，这里不发送。");
+            SetStatus("TTL 没有改动，未写入。");
             return;
         }
 
+        if (!long.TryParse(_ttlBox.Text.Trim(), out var seconds) || seconds == 0 || seconds < -1)
+        {
+            MessageBox.Show(this, "TTL 请填写正数秒，或 -1 表示取消过期。0 会删除键，这里不发送。");
+            return;
+        }
+
+        var message = seconds < 0 ? "将取消这个键的过期时间。" : "将把过期时间改为 " + seconds + " 秒。";
+        if (!Dialogs.Confirm(this, "修改 TTL", message + " 取消不会修改。", danger: false))
+            return;
         if (seconds < 0)
             await ExecAsync(RedisArg.FromText("PERSIST"), _selected.Value);
         else
@@ -1028,6 +1128,10 @@ internal sealed class MainForm : Form
         if (_readOnly || _selected == null)
             return;
         var type = CurrentType();
+        var empty = (type is "hash" or "set" or "zset" && _fieldBox.Text.Length == 0)
+            || (type is "hash" or "list" && _valueEdit.Text.Length == 0);
+        if (empty && !Dialogs.Confirm(this, "新增空成员", "字段或值是空的。确认后才会写入这个空内容。", danger: false))
+            return;
         RedisReply reply;
         if (type == "hash")
             reply = await ExecAsync(RedisArg.FromText("HSET"), _selected.Value, RedisArg.FromText(_fieldBox.Text), RedisArg.FromText(_valueEdit.Text));
@@ -1061,27 +1165,43 @@ internal sealed class MainForm : Form
         }
 
         var row = _members[index];
-        var type = CurrentType();
-        RedisReply reply;
-        if (type == "hash")
-            reply = await ExecAsync(RedisArg.FromText("HSET"), _selected.Value, row.Field, RedisArg.FromText(_valueEdit.Text));
-        else if (type == "list")
-            reply = await ExecAsync(RedisArg.FromText("LSET"), _selected.Value, row.Field, RedisArg.FromText(_valueEdit.Text));
-        else if (type == "zset")
-            reply = await ExecAsync(RedisArg.FromText("ZADD"), _selected.Value, RedisArg.FromText(_valueEdit.Text), row.Field);
-        else if (type == "set")
+        var change = ValueGuard.DescribeMemberChange(
+            CurrentType(),
+            row.Field.IsUtf8 ? row.Field.Utf8 : "",
+            row.Value is { IsUtf8: true } value ? value.Utf8 : "",
+            _fieldBox.Text,
+            _valueEdit.Text);
+        if (change.Invalid)
         {
-            await ExecAsync(RedisArg.FromText("SREM"), _selected.Value, row.Field);
-            reply = await ExecAsync(RedisArg.FromText("SADD"), _selected.Value, RedisArg.FromText(_fieldBox.Text));
-        }
-        else
-        {
-            MessageBox.Show(this, "此类型不在界面里修改成员。");
+            MessageBox.Show(this, change.Message);
             return;
         }
 
-        if (!reply.IsError)
+        if (!change.Changed)
+        {
+            SetStatus("成员没有改动，未写入。");
+            return;
+        }
+
+        if (!Dialogs.Confirm(this, "保存成员", change.Message + (change.EmptyValue ? " 新内容是空的。" : "") + " 取消不会写入。", danger: false))
+            return;
+        var reply = await ValueGuard.ApplyMemberChangeAsync(ExecListAsync, _selected.Value, change, _lifetime.Token);
+        if (reply.IsError)
+            MessageBox.Show(this, reply.ErrorText);
+        else
             await SelectKeyAsync();
+    }
+
+    private void ShowSelectedMember()
+    {
+        if (_grid.CurrentRow == null)
+            return;
+        var index = _grid.CurrentRow.Index;
+        if (index < 0 || index >= _members.Count)
+            return;
+        var row = _members[index];
+        _fieldBox.Text = row.Field.IsUtf8 ? row.Field.Utf8 : "";
+        _valueEdit.Text = row.Value is { IsUtf8: true } value ? value.Utf8 : "";
     }
 
     private async Task DeleteMemberAsync()
@@ -1160,7 +1280,7 @@ internal sealed class MainForm : Form
 
     private async Task RunTerminalAsync()
     {
-        if (_session == null)
+        if (_terminalSession == null)
         {
             AppendTerminal("尚未连接。");
             return;
@@ -1168,7 +1288,7 @@ internal sealed class MainForm : Form
 
         var line = _terminalInput.Text;
         var profile = SelectedProfile();
-        var first = await _runner.RunTerminalAsync(_session, _audit, Context(profile), line, _readOnly, confirmed: false, _lifetime.Token);
+        var first = await _runner.RunTerminalAsync(_terminalSession, _audit, Context(profile), line, _readOnly, confirmed: false, _lifetime.Token);
         if (first.Command != null)
             _history.Accept(first.Command, first.Visibility);
         if (first.NeedsConfirmation)
@@ -1180,8 +1300,11 @@ internal sealed class MainForm : Form
                 return;
             }
 
-            first = await _runner.RunTerminalAsync(_session, _audit, Context(profile), line, _readOnly, confirmed: true, _lifetime.Token);
+            first = await _runner.RunTerminalAsync(_terminalSession, _audit, Context(profile), line, _readOnly, confirmed: true, _lifetime.Token);
         }
+
+        if (_terminalSession.Database != (int)_database.Value)
+            _database.Value = _terminalSession.Database;
 
         if (first.Command?.Name is "CLEAR" or "CLS")
         {
@@ -1189,7 +1312,10 @@ internal sealed class MainForm : Form
             return;
         }
 
-        AppendTerminal("> " + first.Echo + "\n" + first.Output);
+        var authNote = first.Sent && first.Command?.Name is "AUTH" or "HELLO"
+            ? "\n这条命令只作用在命令面板自己的连接上，界面连接的登录没有改。"
+            : "";
+        AppendTerminal("> " + first.Echo + "\n" + first.Output + authNote);
         if (first.AuditFailed)
             _auditNote.Text = first.AuditFailure ?? "操作记录写入失败。命令结果以上面的回显为准。";
         _terminalInput.Clear();
@@ -1327,6 +1453,7 @@ internal sealed class MainForm : Form
         + "「加载全部」只确认一次，然后连续 SCAN 直到游标为 0 或你停止。进度没有虚构总数。到达界面上限会停下，并说明还没有全部加载。\n\n"
         + "精确查询：完整键名只做 EXISTS / TYPE / PTTL，键名里的 * ? [] 都是字面值。输入 KEYS 加模式才会执行 KEYS。KEYS 即使没有 * 也要确认，它是一次阻塞的全库匹配，分页不能减轻服务器成本。\n\n"
         + "选中键之后才读值。大字符串会截断并禁止保存。非 UTF-8 只读。集合按页读取，保存不会用当前页覆盖整个集合。\n\n"
-        + "命令面板是 Redis 命令，不是操作系统命令。所用客户端把 KEYS 视为管理命令，连接时因此放行库自身的管理命令检查，否则确认后的 KEYS 也发不出去。这不是安全开关。FLUSHDB、FLUSHALL、SHUTDOWN 仍在发送前直接拒绝，确认也不能放行。只读模式只放行 COMMAND 元数据标成 readonly 且没有 write 的命令，分类不了就拒绝。可写模式仍会转发未知命令。EVAL、FCALL、MULTI 和模块命令可能间接执行被硬拒绝的操作，客户端的命令名检查覆盖不到，需要在服务器 ACL 里去掉 flushall、flushdb、shutdown、危险类别和不需要的 scripting。命令之间不保证组成可靠事务。\n\n"
+        + "命令面板是 Redis 命令，不是操作系统命令。它使用单独的连接。SELECT 成功后界面库号会跟着变，之后的界面写入发到那个库；不会靠把界面连接的内部库状态改乱来实现。MULTI 和 EXEC 之间，命令面板的下一条命令会进入事务，QUEUED 只表示入队，不是已经写入。界面命令不进入这条事务。AUTH 只改变命令面板那条连接。\n\n"
+        + "所用客户端把 KEYS 视为管理命令，连接时因此放行库自身的管理命令检查，否则确认后的 KEYS 也发不出去。这不是安全开关。FLUSHDB、FLUSHALL、SHUTDOWN 仍在发送前直接拒绝。只读模式只放行 COMMAND 元数据标成 readonly 且没有 write 的命令。可写模式仍会转发未知命令。EVAL、FCALL 和模块命令可能间接执行被硬拒绝的操作，需要在服务器 ACL 里限制。\n\n"
         + "操作记录只留脱敏后的命令和成败，不留返回值。凭据、脚本、未知参数和写入值会隐藏；服务器错误里如果可能带回这些内容，也会隐藏。";
 }

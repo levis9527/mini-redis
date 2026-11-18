@@ -30,10 +30,9 @@ Windows 运行 [44232295992](https://github.com/levis9527/mini-redis/actions/run
 
 下载到的是 GitHub 的外层压缩包。解开后有 `MiniRedis-win-x64.zip`。再解压这一层，运行里面的 `MiniRedis.exe`，不要把 exe 单独拷走。
 
-当前这次：https://github.com/levis9527/mini-redis/actions/runs/44232295992  
-该次 Windows 测试是 29 通过、0 失败。冒烟进程退出码 0，从进入冒烟到主窗口显示并处理一轮消息用了 1007 毫秒，当时工作集 56692736 字节（峰值相同）。这只说明 GitHub 的 Windows 运行器能把窗口创建出来，不是人工点过界面，也不能当成验收。
+运行 [44231976941](https://github.com/levis9527/mini-redis/actions/runs/44231976941)、[44232295992](https://github.com/levis9527/mini-redis/actions/runs/44232295992) 和 [44232541766](https://github.com/levis9527/mini-redis/actions/runs/44232541766) 是写入保护修好之前的包，不要拿去改数据。其中 44231976941 的冒烟没有写出指标；后两次冒烟曾经成功，但那只说明窗口能创建，不表示那些包可以安全保存。
 
-更早的运行 [44231976941](https://github.com/levis9527/mini-redis/actions/runs/44231976941) 测试也是 29 通过，便携 ZIP 是 59013287 字节，但那次冒烟没有等到进程退出，没有启动时间或工作集。
+包含这些保护并通过 Windows CI 的包，才从对应运行的 Artifacts 下载。
 
 ## 怎么用
 
@@ -45,7 +44,7 @@ Windows 运行 [44232295992](https://github.com/levis9527/mini-redis/actions/run
 
 精确查询里，完整键名只做 `EXISTS` / `TYPE` / `PTTL`，键名中的 `*`、`?`、`[]` 都是字面值。只有输入 `KEYS` 加一个模式才会执行 `KEYS`。`KEYS` 即使没有 `*` 也要确认：它是一次阻塞的全库匹配，界面分页不能减轻服务器上的成本。
 
-选中键之后才读值。超过 256 KiB 的字符串只预览并禁止保存。非 UTF-8 只读。Hash、Set、ZSet 按游标翻页，List 按 `LRANGE` 翻页。保存不会用当前页盖掉整个集合。
+选中键之后才读值。超过 256 KiB 的字符串可以继续读下一段；没读完，或内容不是 UTF-8，都不能保存。读到界面上限（2 MiB）就停下，并写明后面的字节没读入。保存完整文本时会尽量保留原来的过期时间。成员没有改动不会写入；要写成空值会先确认。集合改名先加入新成员，成功后再删除旧成员。
 
 命令面板发送 Redis 命令，不是操作系统 shell。传输库把 `KEYS` 算作管理命令，所以连接时打开了它的 AllowAdmin，否则确认后的 `KEYS` 也发不出去。这不是安全开关。`FLUSHDB`、`FLUSHALL`、`SHUTDOWN` 仍在发送前直接拒绝，确认也不能放行。只读模式只放行 `COMMAND INFO` 标成 `readonly` 且没有 `write` 的命令；拿不到元数据就拒绝。可写模式仍会转发未知命令。`EVAL`、`FCALL`、`MULTI` 和模块命令可能间接做被拒绝的事，客户端的命令名检查管不到。需要限制时，请在 Redis ACL 里去掉对应用户的 `flushall`、`flushdb`、`shutdown`、`@dangerous` 以及不需要的 `@scripting`。每一行命令也不保证能组成可靠事务。
 

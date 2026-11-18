@@ -8,6 +8,7 @@ public static class AppLimits
     public const int MaxDisplayedKeys = 20000;
     public const int MaxLoadAllBatches = 10000;
     public const int MaxStringBytes = 256 * 1024;
+    public const int MaxLoadedStringBytes = 2 * 1024 * 1024;
     public const int CollectionPageSize = 50;
     public const int ReplyMaxChars = 65536;
     public const int AuditMaxBytes = 1024 * 1024;
