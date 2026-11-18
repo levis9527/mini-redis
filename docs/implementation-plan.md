@@ -226,7 +226,7 @@ GitHub Actions：`windows-latest`，`workflow_dispatch`、分支推送和 pull r
 | Core / Redis / WinForms | 已编译。桌面目标框架 `net10.0-windows10.0.17763.0` |
 | 自动化测试 | Linux 上 `dotnet test -c Release`：29 通过，0 失败。Windows 运行 44231976941 同样是 29 通过、0 失败 |
 | 目录发布 | Linux 交叉发布：280 个文件，目录 150010430 字节，ZIP 57102299 字节。Windows 运行 44231976941：同样 280 个文件，便携 ZIP 59013287 字节。GitHub Artifact 外层 58623312 字节 |
-| Windows 工作流 | [44231976941](https://github.com/levis9527/mini-redis/actions/runs/44231976941) 成功。界面冒烟没有等到 WinExe 退出，没有启动时间或工作集 |
-| 受支持 Windows 上的 GUI | 上述冒烟不能当成窗口已经打开。不把资源数字写成已测量 |
+| Windows 工作流 | [44232295992](https://github.com/levis9527/mini-redis/actions/runs/44232295992) 成功。便携 ZIP 59013463 字节，解压目录 150012111 字节、280 个文件。Artifact 外层 58623554 字节 |
+| 受支持 Windows 上的 GUI | 同一次冒烟退出码 0。startup_ms=1007，working_set_bytes=56692736，peak_working_set_bytes=56692736。只创建了主窗口并处理一轮消息，不是人工操作 |
 | 签名 / 公开 Release | 未做 |
 | 体积取舍 | 自包含目录带上整个桌面运行时，所以 ZIP 大约五十多 MB、解压后大约一百五十 MB。这是免安装的代价，不承诺再压小 |

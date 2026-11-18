@@ -22,7 +22,7 @@ Mini Redis 是一个 Windows x64 绿色桌面程序，用来连接 Redis 并查�
 
 自包含目录把 .NET 桌面运行时和本机库放进发布文件夹，这样解压后不必再安装运行时。体积因此不小，这是免安装换来的，不是把界面本身做成了一个很小的程序。
 
-Windows 运行 [44231976941](https://github.com/levis9527/mini-redis/actions/runs/44231976941) 打出的便携 ZIP 是 59013287 字节，里面 280 个文件。GitHub 再把这个 ZIP 和指标文件包成 Artifact `MiniRedis-win-x64-portable`，外层是 58623312 字节。同一套发布在 Linux 上交叉编译时，解压后的目录是 150010430 字节，ZIP 是 57102299 字节。两次压缩率不同，所以 ZIP 字节数不一样。这里不承诺以后能压到某个更小的数字。
+Windows 运行 [44232295992](https://github.com/levis9527/mini-redis/actions/runs/44232295992) 打出的便携 ZIP 是 59013463 字节。解压后的目录是 280 个文件、150012111 字节。GitHub 再把这个 ZIP 和指标文件包成 Artifact `MiniRedis-win-x64-portable`，外层是 58623554 字节。同一套发布在 Linux 上交叉编译时，目录是 150010430 字节，ZIP 是 57102299 字节。两次压缩率不同，所以 ZIP 字节数略有差别。这里不承诺以后能压到某个更小的数字。
 
 ## 下载
 
@@ -30,8 +30,10 @@ Windows 运行 [44231976941](https://github.com/levis9527/mini-redis/actions/run
 
 下载到的是 GitHub 的外层压缩包。解开后有 `MiniRedis-win-x64.zip`。再解压这一层，运行里面的 `MiniRedis.exe`，不要把 exe 单独拷走。
 
-已完成的一次：https://github.com/levis9527/mini-redis/actions/runs/44231976941  
-该次 Windows 测试是 29 通过、0 失败。界面冒烟步骤没有等到进程退出，没有写出启动时间或工作集，不能把那次当成窗口已打开。
+当前这次：https://github.com/levis9527/mini-redis/actions/runs/44232295992  
+该次 Windows 测试是 29 通过、0 失败。冒烟进程退出码 0，从进入冒烟到主窗口显示并处理一轮消息用了 1007 毫秒，当时工作集 56692736 字节（峰值相同）。这只说明 GitHub 的 Windows 运行器能把窗口创建出来，不是人工点过界面，也不能当成验收。
+
+更早的运行 [44231976941](https://github.com/levis9527/mini-redis/actions/runs/44231976941) 测试也是 29 通过，便携 ZIP 是 59013287 字节，但那次冒烟没有等到进程退出，没有启动时间或工作集。
 
 ## 怎么用
 
